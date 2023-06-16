@@ -3,7 +3,6 @@ import math, hashes, sets
 # This library provides two configurable parameters: P and Bits. Redis implementation (which this library was based upon) uses 14 and 6
 const HyperLogLogP {.intdefine.} = 14
 const HyperLogLogBits {.intdefine.} = 6
-const HyperLogLogExactBytes {.intdefine.} = 128
 
 type
   HLLEncoding = enum
@@ -35,9 +34,6 @@ const
   SparseZeroMaxLen = 64
   SparseXZeroMaxLen = 16384
   AlphaInf = 0.721347520444481703680
-
-  ExactBitmapBytes = HyperLogLogExactBytes
-  ExactBitmapLen = ExactBitmapBytes * 8
 
 type 
   RawRegisters = array[0..(Registers - 1), byte]
@@ -333,25 +329,27 @@ proc exactToSparse(hll: var HLL) =
     i += 2
   assert i == hll.reglen
 
-  for i in countup(ExactBitmapBytes, reglen - 1, 8):
+  for i in countup(0, reglen - 1, 8):
     let h = cast[ptr uint64](unsafeAddr regs[i])[]
     let (index, count) = patHashLen(h)
-    sparseSet(hll, index, count)
+    if hll.encoding == Sparse:
+      sparseSet(hll, index, count)
+    else:
+      denseSet(hll, index, count)
 
 proc exactSet(hll: var HLL, h: uint64): bool {.discardable.} =
-  let bm = h mod ExactBitmapLen
-  let bmi = bm shr 3
-  let bmf = byte(1 shl (bm and 7))
-  if hll.registers.len > ExactBitmapBytes and (hll.registers[bmi] and bmf) != 0:
-    for i in countup(ExactBitmapBytes, hll.reglen - 1, 8):
-      let eh = cast[ptr uint64](unsafeAddr hll.registers[i])[]
-      if eh == h:
-        return false
+  for i in countup(0, hll.reglen - 1, 8):
+    let eh = cast[ptr uint64](unsafeAddr hll.registers[i])[]
+    if eh == h:
+      return false
 
   if hll.reglen + 8 > hll.exactMaxBytes:
     hll.exactToSparse()
     let (index, count) = patHashLen(h)
-    hll.sparseSet(index, count)
+    if hll.encoding == Sparse:
+      hll.sparseSet(index, count)
+    else:
+      hll.denseSet(index, count)
     return true
 
   hll.reglen += 8
@@ -361,8 +359,7 @@ proc exactSet(hll: var HLL, h: uint64): bool {.discardable.} =
     newlen = min(newlen, hll.exactMaxBytes)
     hll.registers.setLen(newlen)
   copyMem(addr hll.registers[hll.reglen - 8], unsafeAddr h, 8)
-  hll.registers[bmi] = hll.registers[bmi] or bmf # Update bitmap
-  hll.card = uint64((hll.reglen - ExactBitmapBytes) div 8)
+  hll.card = uint64(hll.reglen div 8)
   return true
 
 proc sparseRegHisto(hll: HLL, reghisto: var array[0..63, int]) =
@@ -436,7 +433,7 @@ proc count(hll: HLL or RawRegisters): uint64 =
     case hll.encoding
     of Dense: denseRegHisto(hll, reghisto)
     of Sparse: sparseRegHisto(hll, reghisto)
-    of Exact: return uint64((hll.reglen - ExactBitmapBytes) div 8)
+    of Exact: return uint64(hll.reglen div 8)
   else:
     rawRegHisto(hll, reghisto)
   var z = m * tau((m - float64(reghisto[Q + 1])) / m)
@@ -448,7 +445,7 @@ proc count(hll: HLL or RawRegisters): uint64 =
 
 proc merge(hset: var HashSet, hll: HLL) =
   assert hll.encoding == Exact
-  for i in countup(ExactBitmapBytes, hll.reglen - 1, 8):
+  for i in countup(0, hll.reglen - 1, 8):
     let h = cast[ptr uint64](unsafeAddr hll.registers[i])[]
     hset.incl(h)
 
@@ -483,7 +480,6 @@ proc initHLL*(sparseMaxBytes: int = 3000, exactMaxBytes: int = 0): HLL =
   result.encoding = Exact
   result.exactMaxBytes = exactMaxBytes
   result.sparseMaxBytes = sparseMaxBytes
-  result.reglen = ExactBitmapBytes
   if exactMaxBytes == 0:
     result.exactToSparse()
 
@@ -564,11 +560,14 @@ proc union*(hlls: varargs[HLL]): HLL =
     var hset: HashSet[uint64]
     for i in 0..<len(hlls):
       merge(hset, hlls[i])
-    if hset.card * 8 + ExactBitmapBytes > result.exactMaxBytes:
+    if hset.card * 8 > result.exactMaxBytes:
       result.exactToSparse()
       for h in hset:
         let (index, count) = patHashLen(h)
-        result.sparseSet(index, count)
+        if result.encoding == Sparse:
+          result.sparseSet(index, count)
+        else:
+          result.denseSet(index, count)
     else:
       for h in hset:
         result.exactSet(h)
@@ -585,10 +584,10 @@ proc union*(hlls: varargs[HLL]): HLL =
   for j in 0..<Registers:
     if max[j] == 0:
       continue
-    case result.encoding
-    of Dense: result.denseSet(j, int(max[j]))
-    of Sparse: result.sparseSet(j, int(max[j]))
-    else: discard
+    if result.encoding == Sparse:
+      result.sparseSet(j, int(max[j]))
+    else:
+      result.denseSet(j, int(max[j]))
   result.invalidateCache()
 
 proc merge*(hlls: varargs[HLL]): HLL =
@@ -607,14 +606,10 @@ proc `+`*(a, b: HLL): HLL = union(a, b)
 proc clear*(hll: var HLL) =
   ## Removes all elements from `hll` (without freeing up memory, so it can be reused).
   hll.card = 0
-  if hll.exactMaxBytes > 0:
-    hll.encoding = Exact
-    hll.reglen = ExactBitmapBytes
-    if hll.registers.len < hll.reglen:
-      hll.registers.setLen(hll.reglen)
-    zeroMem(addr hll.registers[0], hll.reglen)
-  else:
-    hll.encoding = Sparse
+  hll.encoding = Exact
+  hll.reglen = 0
+  if hll.exactMaxBytes == 0:
+    hll.exactToSparse()
 
 proc hash*(hll: HLL): Hash =
   ## Returns hash of `hll`.
