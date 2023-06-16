@@ -1,0 +1,14 @@
+HLL	hyperloglog.html#HLL	hyperloglog: HLL	
+initHLL	hyperloglog.html#initHLL,int,int	hyperloglog: initHLL(sparseMaxBytes: int = 3000; exactMaxBytes: int = 0): HLL	
+incl	hyperloglog.html#incl,HLL,A	hyperloglog: incl[A](hll: var HLL; key: A): bool	
+add	hyperloglog.html#add,HLL,A	hyperloglog: add[A](hll: var HLL; key: A): bool	
+len	hyperloglog.html#len,HLL	hyperloglog: len(hll: HLL): int	
+getLen	hyperloglog.html#getLen,HLL	hyperloglog: getLen(hll: var HLL): int	
+card	hyperloglog.html#card,varargs[HLL]	hyperloglog: card(hlls: varargs[HLL]): int	
+union	hyperloglog.html#union,varargs[HLL]	hyperloglog: union(hlls: varargs[HLL]): HLL	
+merge	hyperloglog.html#merge,varargs[HLL]	hyperloglog: merge(hlls: varargs[HLL]): HLL	
+`+`	hyperloglog.html#+,HLL,HLL	hyperloglog: `+`(a, b: HLL): HLL	
+clear	hyperloglog.html#clear,HLL	hyperloglog: clear(hll: var HLL)	
+hash	hyperloglog.html#hash,HLL	hyperloglog: hash(hll: HLL): Hash	
+toBytes	hyperloglog.html#toBytes,HLL	hyperloglog: toBytes(hll: HLL): seq[byte]	
+toHLL	hyperloglog.html#toHLL,seq[byte],int,int	hyperloglog: toHLL(bytes: seq[byte]; sparseMaxBytes: int = 3000; exactMaxBytes: int = 0): HLL	
